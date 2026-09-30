@@ -1,0 +1,3 @@
+# The server itself needs only an MCP runtime and an HTTP client.
+mcp>=1.5.0
+httpx>=0.28.1

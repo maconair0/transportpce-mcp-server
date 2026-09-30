@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+# Runtime state: the approval queue, audit log and any policy overrides.
+# Never committed — an approval queue is deployment state, and the audit log
+# records what a real controller was asked to do.
+transportpce_mcp/state/
+state/
