@@ -116,6 +116,16 @@ def register_tools(mcp, client: RestconfClient, gate: WriteGate) -> None:
             got = await client.get(NETWORKS_PATH.format(network=name))
             return _reply({"ok": True, "network": name,
                            "data": got if raw else summarise.summarise_topology(got, name)})
+        except TransportPceError as e:
+            if e.data_missing:
+                # The network does not exist yet because nothing is mounted. An
+                # empty controller is an answer; reported as a failure it read as
+                # "TransportPCE is down" while it was healthy and simply empty.
+                return _reply({"ok": True, "network": network,
+                               "data": {"network": network, "nodes": 0, "links": 0,
+                                        "note": "no devices are mounted, so this "
+                                                "topology has not been built yet"}})
+            return _failure("get_topology", e)
         except Exception as e:  # noqa: BLE001
             return _failure("get_topology", e)
 
