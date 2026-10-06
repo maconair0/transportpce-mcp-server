@@ -313,6 +313,68 @@ class ServiceCreateShapeTests(unittest.TestCase):
         with self.assertRaises(schemas.ValidationError):
             schemas.netconf_node_body("n", "10.0.0.1", 99999, "u", "p")
 
+    def test_a_netconf_mount_nests_its_connection_parameters(self):
+        """The flat shape is a 400; this is the one a live controller takes.
+
+        Most documentation and most older examples show host, port, username
+        and password as siblings of node-id. TransportPCE 13.0.0 answers that
+        with a bare HTTP 400 and the nested shape with 201.
+        """
+        body = schemas.netconf_node_body("ROADM-A1", "10.0.0.1", 17841, "admin", "admin")
+        node = body["node"][0]
+        self.assertEqual(node["node-id"], "ROADM-A1")
+        inner = node["netconf-node-topology:netconf-node"]
+        self.assertEqual(inner["netconf-node-topology:host"], "10.0.0.1")
+        self.assertEqual(inner["netconf-node-topology:port"], 17841)
+        # credentials one level deeper again
+        creds = inner["netconf-node-topology:login-password-unencrypted"]
+        self.assertEqual(creds["netconf-node-topology:username"], "admin")
+        self.assertEqual(creds["netconf-node-topology:password"], "admin")
+        # and nothing left at the top to be read as the flat shape
+        self.assertNotIn("netconf-node-topology:host", node)
+
+
+class NodeStatusShapeTests(unittest.TestCase):
+    """Where a mounted device's state actually lives.
+
+    `connection-status` is nested inside `netconf-node-topology:netconf-node`,
+    not beside `node-id`. Read from the top of the node it is simply absent, so
+    every device reports "unknown" while all of them are connected — which is
+    worse than an error, because it looks like an answer.
+    """
+
+    LIVE = {"node": [{
+        "node-id": "ROADM-A1",
+        "netconf-node-topology:netconf-node": {
+            "port": 17841,
+            "connection-status": "connected",
+            "available-capabilities": {"available-capability": [{"capability": "a"},
+                                                                {"capability": "b"}]},
+            "unavailable-capabilities": {"unavailable-capability": [{"capability": "c"}]},
+        },
+    }]}
+
+    def test_it_reads_the_nested_status(self):
+        got = summarise.summarise_node_status(self.LIVE)
+        self.assertEqual(got["nodes"][0]["connection-status"], "connected")
+        self.assertEqual(got["nodes"][0]["node-id"], "ROADM-A1")
+
+    def test_it_counts_nested_capabilities(self):
+        got = summarise.summarise_node_status(self.LIVE)
+        self.assertEqual(got["nodes"][0]["capabilities"], 2)
+        self.assertTrue(got["nodes"][0]["unavailable-capabilities"])
+
+    def test_a_flat_node_still_reads(self):
+        # older controllers returned it flat; this has to read whatever the
+        # deployment in front of it sends
+        got = summarise.summarise_node_status(
+            {"node": [{"node-id": "X", "connection-status": "connecting"}]})
+        self.assertEqual(got["nodes"][0]["connection-status"], "connecting")
+
+    def test_a_node_with_no_status_says_unknown_rather_than_guessing(self):
+        got = summarise.summarise_node_status({"node": [{"node-id": "X"}]})
+        self.assertEqual(got["nodes"][0]["connection-status"], "unknown")
+
 
 class SummaryTests(unittest.TestCase):
     """A full OpenROADM topology is megabytes; it must not be the default."""

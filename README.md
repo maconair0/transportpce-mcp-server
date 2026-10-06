@@ -8,13 +8,27 @@ It lets an AI agent read an optical network — topology, port mappings, device
 status, provisioned services — and compute paths through it, while keeping
 provisioning behind a human approval gate.
 
-> **Status: not yet run against a real controller.** Every request shape is
-> derived from TransportPCE's own YANG models and exercised against mocked
-> RESTCONF (92 tests). What that proves is that the bodies match the models and
-> the error paths are handled. What it does not prove is that a live TransportPCE
-> accepts them. The [smoke test](#smoke-test) is the first real evidence, and
-> nobody has run it. Treat the read tools as probably-right and the write tools
-> as untested.
+> **Status: run against a live controller, on a four-ROADM mesh.** TransportPCE
+> 13.0.0 (Karaf, OpenROADM 2.2.1) with six honeynode simulators — two
+> transponders at the edges and four interconnected ROADMs between them, each
+> reporting a different vendor. The controller onboarded all six from nothing but
+> their NETCONF mounts, built port mappings for each, and assembled a 17-node /
+> 42-link OpenROADM topology with ten ROADM-to-ROADM links in a mesh
+> (A1–B1, A1–C1, B1–C1, B1–D1, C1–D1). Adding the fourth ROADM needed no
+> configuration beyond the mount: TransportPCE inferred its line links from the
+> device's own OTS interfaces.
+>
+> **End-to-end path computation is confirmed** across that mesh — 23 hops in each
+> direction, dp-qpsk at 196.1 THz over a 40 GHz channel. **The write tools remain
+> untested**, by design: they route through an approval gate rather than
+> executing, and nobody has approved one against hardware.
+>
+> Running it found three bugs in this server that mocked tests could not, all with
+> the same shape — RESTCONF returns a module-qualified key and the code looked for
+> the bare name, so it found nothing and reported that inside a reply whose `ok`
+> was still `true`. See [What live testing changed](#what-live-testing-changed).
+> Documentation derived from YANG models is a good starting guess and is not
+> evidence; this is what the difference looked like in practice.
 
 ## Why the write tools do not write
 
@@ -97,6 +111,19 @@ RESTCONF makes this harder than it sounds, because OpenROADM RPCs report failure
 
 Reading the 200 as success is how a refused `service-create` gets reported as
 provisioned. This server checks the body.
+
+**(corrected) An empty container is a 409, not a 404.** RESTCONF returns
+`data-missing` as **HTTP 409 Conflict**:
+
+```json
+{"errors": {"error": [{"error-tag": "data-missing",
+  "error-message": "Request could not be completed because the relevant data model content does not exist"}]}}
+```
+
+So "there are no services yet" and "that path does not exist" arrive with
+different status codes from the ones you would guess, and a 404 special-case
+never fires. This server matches on `error-tag`, not on the status line, which
+is the only version of this that stays right.
 
 ### Topology reads are summarised by default
 
@@ -228,9 +255,19 @@ Xtesting harness. They do not package the controller. It is built from source.
 ```bash
 git clone https://gerrit.opendaylight.org/gerrit/transportpce
 cd transportpce
-mvn clean install -DskipTests          # JDK 17+, Maven 3.8+
+mvn clean install -DskipTests          # JDK 21 and Maven 3.9.5+ (corrected)
 ./karaf/target/assembly/bin/karaf
 ```
+
+**(corrected)** This README previously said JDK 17 and Maven 3.8. The build
+rejects both: TransportPCE 13.0.0 requires **JDK 21** and **Maven 3.9.5 or
+newer**, and fails in the enforcer plugin rather than at compile time, so the
+message names the plugin and not the version.
+
+Karaf also writes its HTTP port in **two** files — `etc/org.ops4j.pax.web.cfg`
+and `etc/org.apache.karaf.http.cfg` — and setting only one leaves pax-web
+unable to bind. When that happens RESTCONF answers 404 on *every* path, which
+reads exactly like a feature that was never installed.
 
 At the `opendaylight-user@root>` prompt:
 
@@ -238,9 +275,11 @@ At the `opendaylight-user@root>` prompt:
 feature:install odl-transportpce
 ```
 
-Add `odl-transportpce-tapi` for the two TAPI tools; without it they return 404,
-which this server reports as `refused` rather than as the controller being
-absent.
+Add `odl-transportpce-tapi` for the two TAPI tools. **(corrected)** Without it
+they do not return 404 — they return **HTTP 500** with
+`"No implementation of RPC ... available"`, which this server now names
+explicitly, along with the `feature:install` line that fixes it. A 500 reported
+as "the controller is broken" sends you to the wrong place entirely.
 
 RESTCONF then answers on **8181** with **admin/admin** — taken from the project's
 own `tests/transportpce_tests/common/test_utils.py`, which sets
@@ -256,9 +295,103 @@ harness waits on. Same RESTCONF surface, so nothing here changes; only
 
 ### Device simulators
 
-With no real ROADMs the topology stays empty. `tests/Xtesting/DockerSims/build_sims.sh`
-in the TransportPCE repository builds honeynode simulators it can mount over
-NETCONF — the intended way to get a non-trivial topology on a laptop.
+With no real ROADMs the topology stays empty. The honeynode simulators in the
+TransportPCE repository are the intended way to get a non-trivial topology on a
+laptop, and they work well — but there is a trap in getting them.
+
+**(corrected) `tests/Xtesting/DockerSims/build_sims.sh` cannot be built any
+more.** Its Dockerfile `wget`s GitLab **job artifacts** pinned to honeynode
+plugin 1.0.0 and 2.0.0, and GitLab expires job artifacts. The build dies on a
+404 from inside the image build, which reads like a network or proxy problem and
+is not one. The repository's own `tests/install_honeynode.sh` has moved on to
+plugin **2.0.10**, whose URL still resolves:
+
+```bash
+cd transportpce/tests
+./install_honeynode.sh 2.2.1        # needs curl and unzip
+```
+
+That drops the simulator under `tests/honeynode/2.2.1/`. Building a container
+image from *that* — rather than from the expired artifacts — gives something
+reproducible that needs no network at build time:
+
+```dockerfile
+FROM eclipse-temurin:11-jre-alpine
+COPY honeynode-simulator /opt/honeynode
+COPY sample_configs /opt/sample_configs
+WORKDIR /opt/honeynode
+ENV DEVICE_FILE=oper-ROADMA.xml
+EXPOSE 1830/tcp
+CMD ["sh", "-c", "exec ./honeycomb-tpce 1830 /opt/sample_configs/$DEVICE_FILE"]
+```
+
+Run one container per device, publishing NETCONF 1830 on a distinct host port.
+The topology used to test this server is transponders at the edges and a
+four-ROADM mesh in the middle:
+
+```
+          ROADM-A1 ──────── ROADM-B1
+            :17841   \        :17842
+XPDR-A1 ──────┘        \         │   \
+ :17840                 \        │    ROADM-D1 ── (:17847)
+                         ROADM-C1 ─────┘
+XPDR-C1 ──────────────────  :17843
+ :17844
+```
+
+Adjacencies: A1–B1, A1–C1, B1–C1, B1–D1, C1–D1. The fourth ROADM needs nothing
+but its mount — TransportPCE infers the line links from the device's own OTS
+interfaces, and `oper-ROADMD.xml` ships in the project's sample configs.
+
+Start them **one at a time, waiting for each**. The `honeycomb-tpce` launcher
+`sed`-edits shared files under `config/` before starting the JVM, so simultaneous
+launches overwrite each other's device config and all but one fail with an SSH
+bind error that does not mention the real cause. Wait for
+`Netconf SSH endpoint started successfully` in each log before starting the next.
+
+If a device sits in `connection-status: connecting` after its simulator is up,
+ODL is in reconnect backoff from the failed attempts; deleting and re-creating the
+mount is faster than waiting it out.
+
+#### The mount id must be the name the devices use for each other
+
+This is the one that costs the most time. TransportPCE discovers ROADM-to-ROADM
+links from each device's LLDP table, which names its neighbours — in these
+sample configs, `ROADM-A1` and `ROADM-C1`. Mount the same device as `roadma`
+and everything *looks* right: it connects, it is onboarded, its port mapping is
+built, and the log says `OpenRoadm device roadma correctly connected to
+controller`. Then:
+
+```
+WARN  R2RLinkDiscovery | Neighbouring nodeId: ROADM-A1 is not mounted yet
+```
+
+and you have five connected devices with no fibre between them. Mount them
+under the ids they advertise.
+
+#### Transponder-to-ROADM links are created, not discovered
+
+LLDP covers ROADM to ROADM. The transponder attachments are added explicitly,
+both ways:
+
+```bash
+for rpc in init-xpdr-rdm-links init-rdm-xpdr-links; do
+  curl -u admin:admin -X POST \
+    http://localhost:8181/rests/operations/transportpce-networkutils:$rpc \
+    -H 'Content-Type: application/json' -d '{"networkutils:input":{"networkutils:links-input":{
+      "networkutils:xpdr-node":"XPDR-A1","networkutils:xpdr-num":"1","networkutils:network-num":"1",
+      "networkutils:rdm-node":"ROADM-A1","networkutils:srg-num":"1",
+      "networkutils:termination-point-num":"SRG1-PP1-TXRX"}}}'
+done
+```
+
+#### Multi-vendor is worth setting up, and is two lines of sed
+
+Every stock sample config reports `vendorA`, so a core built from them tests
+nothing about the one claim OpenROADM actually makes. Rewriting `<vendor>` and
+`<model>` in the operational XML per ROADM and mounting that over the stock file
+gives a genuinely multi-vendor line system, and the topology comes out
+identical — same 32 links, same types. That is the result worth having.
 
 ## Smoke test
 
@@ -349,9 +482,87 @@ models:
 `tpce_describe_models` reports both at runtime, so an agent can ask rather than
 guess.
 
+### What a live controller added to that list
+
+Four more, found by sending requests to TransportPCE 13.0.0 rather than by
+reading the models. Each failed in a way that did not name the real problem.
+
+- **`pce-routing-metric` is effectively mandatory, and omitting it does not
+  default — it throws.** The leaf is optional in the YANG. Leave it out and the
+  PCE raises a `NullPointerException` inside `PceGraph.chooseWeight`
+  (`getPceMetrics()` returned null), surfaced as a bare
+  `"path-computation-request failed"`. It is `pce-routing-metric`, not
+  `pce-metric`; the shorter name is rejected as an unknown schema node.
+- **`tx-direction` and `rx-direction` are containers, not lists**, in revision
+  `2024-02-05`. Sending a list gets
+  `"Found an unexpected array nested under tx-direction"`. Older examples —
+  including some of the project's own test payloads — wrap them in an array.
+- **There is no `lgx` node under them** in that revision, though the published
+  examples include one.
+- **A ROADM-to-ROADM link with no OMS attributes is invisible to the PCE.** The
+  link appears in `openroadm-topology` with `link-type: ROADM-TO-ROADM` and
+  `operational-state: inService`, and the PCE still builds a graph without it —
+  so a complete, connected, healthy-looking topology returns
+  `"No path found by PCE"` with no indication why. Span data
+  (`org-openroadm-network-topology:OMS-attributes/span`) has to be written onto
+  each line link first. This is defensible behaviour, not a bug: a fibre whose
+  loss and length nobody has recorded is not something an impairment-aware PCE
+  should route over. But the failure is silent, and the fix is not discoverable
+  from the error.
+
+### Where the data lives
+
+Two reads that return `data-missing` if you ask for the wrong datastore:
+
+- **Port mappings are in `config`**, not `nonconfig`:
+  `GET /rests/data/transportpce-portmapping:network`.
+- **A mounted device's `connection-status` is nested inside
+  `netconf-node-topology:netconf-node`**, not at the node level. Read from the
+  top it is simply absent, so every device reports unknown while all of them are
+  connected.
+
 Legal `service-format` values, from OpenROADM's `org-openroadm-service-format.yang`:
 `Ethernet`, `OTU`, `OC`, `STM`, `OMS`, `ODU`, `OTM`, `other`, `flexo`.
 `pce-routing-metric`: `hop-count`, `propagation-delay`, `TE-metric`, `IGP-metric`.
+
+## What live testing changed
+
+Running against a real controller found three bugs in **this server** that mocked
+RESTCONF could not, because a mock returns the shape the test author expected. All
+three had one shape: RESTCONF answers with a *module-qualified* key, the code
+looked for the bare name, found nothing, and said so inside a reply whose `ok` was
+still `true`. A failure that reports itself as an unreadable success is worse than
+one that reports itself as a failure, because nothing downstream can tell.
+
+- **A per-node port mapping returned `nodes: 0`.** Asking for every node returns
+  `{"transportpce-portmapping:network": {"nodes": [...]}}`; asking for one returns
+  `{"transportpce-portmapping:nodes": [...]}` — a different key, no `network`
+  wrapper. Only the first was unwrapped, so `tpce_get_portmapping(node_id=...)`
+  reported zero nodes for a device the same tool listed happily when asked for all
+  of them. Both shapes are now matched by key *suffix*, as the YANG augmentation
+  prefixes already were.
+- **Every path computation reply was unreadable.** The RPC output arrives under
+  `transportpce-pce:output`, not `output`, so the summariser returned
+  `"no output in the reply"` for every result — including successful ones.
+- **A PCE refusal was reported as a success.** TransportPCE answers `HTTP 200`
+  carrying `response-code: 500, "No path found by PCE."`. That is an answer, and
+  not the one asked for. The summary now carries `path_found` and, when false, a
+  `refused` line quoting the controller — so an unroutable circuit cannot read as
+  a routable one.
+
+One behaviour changed as well: **`pce-routing-metric` is now always sent**,
+defaulting to `hop-count`. It is optional in the YANG, but TransportPCE's
+`PceGraph.chooseWeight` calls `getPceMetric().ordinal()` with no null check, so
+omitting it crashes the RPC and surfaces as `HTTP 500
+path-computation-request failed` — which reads as "this network cannot be routed"
+rather than "one optional field was missing". `hop-count` is the default because
+it needs no physical-layer data; the metrics that do are useless on a topology
+whose links carry no OMS attributes.
+
+The lesson is narrow and worth stating: the tests that passed were testing the
+summarisers against payloads written from the same reading of the models that the
+summarisers were written from. Mocks agree with you. Only the controller
+disagrees.
 
 ## Tests
 
@@ -359,11 +570,15 @@ Legal `service-format` values, from OpenROADM's `org-openroadm-service-format.ya
 python -m unittest discover -s tests -t .
 ```
 
-92 tests, no network and no controller required. They cover the request bodies
+109 tests, no network and no controller required. They cover the request bodies
 against the models' own mandatory-leaf rules, the RESTCONF error shapes
 (`ietf-restconf:errors`, and an RPC failing inside an HTTP 200), the summarisers
 against every wrapping ODL uses, and the gate — including several tests whose
 only job is to assert that a write tool left the HTTP call list empty.
+
+The newest ones pin the three bugs a live four-ROADM network exposed, so each is
+now a regression rather than a lesson: a single-node port mapping reply, a
+module-qualified RPC output, and a PCE refusal arriving inside an HTTP 200.
 
 ## Design notes
 

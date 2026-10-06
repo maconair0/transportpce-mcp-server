@@ -36,6 +36,11 @@ SERVICE_FORMATS = ("Ethernet", "OTU", "OC", "STM", "OMS", "ODU", "OTM", "other",
 # From transportpce-common-service-path-types, typedef pce-metric.
 PCE_METRICS = ("hop-count", "propagation-delay", "TE-metric", "IGP-metric")
 
+# Sent when the caller names none. hop-count because it needs no
+# physical-layer data: the metrics that do are useless on a topology
+# whose links carry no OMS attributes.
+DEFAULT_PCE_METRIC = "hop-count"
+
 # The networks TransportPCE publishes under ietf-network:networks.
 NETWORKS = ("openroadm-topology", "otn-topology", "openroadm-network",
             "clli-network")
@@ -142,8 +147,13 @@ def path_computation_request(
             "service-z-end": endpoint(service_z_end),
         }
     }
-    if pce_routing_metric:
-        body["input"]["pce-routing-metric"] = pce_routing_metric
+    # Always sent, never omitted. TransportPCE's PceGraph.chooseWeight calls
+    # `getPceMetric().ordinal()` with no null check, so a request without this
+    # field does not get a default — it crashes the RPC with
+    # `NullPointerException ... PceMetric.ordinal()` and comes back as
+    # `HTTP 500 path-computation-request failed`, which reads as "this network
+    # cannot be routed" rather than "one optional field was missing".
+    body["input"]["pce-routing-metric"] = pce_routing_metric or DEFAULT_PCE_METRIC
     if customer_name:
         body["input"]["customer-name"] = customer_name
     if hard_constraints:
@@ -238,7 +248,21 @@ def service_delete_request(service_name: str, request_id: str = "",
 
 def netconf_node_body(node_id: str, host: str, port: int, username: str,
                       password: str) -> Dict[str, Any]:
-    """A network-topology NETCONF node, for mounting a device on TransportPCE."""
+    """A network-topology NETCONF node, for mounting a device on TransportPCE.
+
+    The connection parameters are **nested under `netconf-node`**, and the
+    credentials under `login-password-unencrypted` inside that. This matters:
+    the flat shape — host, port, username and password as siblings of `node-id`
+    — is what most documentation and most older examples show, and a live
+    controller rejects it with a bare **HTTP 400**. The nested shape returns
+    201. Confirmed against TransportPCE 13.0.0.
+
+    `node-id` deserves a word too. TransportPCE discovers ROADM-to-ROADM links
+    from each device's LLDP neighbour table, which names its neighbours by their
+    own node ids. Mount a device under any other name and it connects, onboards
+    and maps perfectly, and the controller then logs "Neighbouring nodeId: X is
+    not mounted yet" and builds no line links at all.
+    """
     problems = []
     if not node_id:
         problems.append("node-id is mandatory")
@@ -249,14 +273,18 @@ def netconf_node_body(node_id: str, host: str, port: int, username: str,
     if problems:
         raise ValidationError("; ".join(problems))
     return {
-        "network-topology:node": [{
+        "node": [{
             "node-id": node_id,
-            "netconf-node-topology:host": host,
-            "netconf-node-topology:port": port,
-            "netconf-node-topology:username": username,
-            "netconf-node-topology:password": password,
-            "netconf-node-topology:tcp-only": False,
-            "netconf-node-topology:keepalive-delay": 0,
+            "netconf-node-topology:netconf-node": {
+                "netconf-node-topology:host": host,
+                "netconf-node-topology:port": port,
+                "netconf-node-topology:tcp-only": False,
+                "netconf-node-topology:keepalive-delay": 0,
+                "netconf-node-topology:login-password-unencrypted": {
+                    "netconf-node-topology:username": username,
+                    "netconf-node-topology:password": password,
+                },
+            },
         }]
     }
 
