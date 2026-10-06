@@ -167,6 +167,77 @@ Three things that cost time if you do not know them:
                                     "SRLG-length": 100000, "pmd": 0.5}]}}
   ```
 
+## Lightynode: build a topology and connect it to other domains
+
+[Lightynode](https://gitlab.com/Orange-OpenSource/lfn/odl/Lightynode-simulator) is
+a lighty.io OpenROADM device simulator. Unlike honeynode, each instance is an
+independent JVM, so several can be started at once.
+
+**Build** (JDK 21 and Maven 3.9+; the project README still says 17, which fails):
+
+```bash
+git clone https://gitlab.com/Orange-OpenSource/lfn/odl/Lightynode-simulator.git
+cd Lightynode-simulator
+mvn clean install -DskipTests
+```
+
+If the build cannot resolve `99.x` versions, those are internal builds not on any
+public repository. Pin `yang-data-tree-api` to `14.0.23` and `openconfig-200` to
+`24.0.1` in the root `pom.xml`. The OpenROADM 2.2.1 simulator then builds and
+runs; at the time of writing 7.1 fails at startup and the OpenConfig modules
+need models that are not published.
+
+**Run two ROADMs** with TransportPCE's own sample configs:
+
+```bash
+J=lighty-openroadm-device-221/target/lighty-openroadm-device-221-*-SNAPSHOT.jar
+CFG=transportpce/tests/sample_configs/openroadm/2.2.1
+java -jar $J -p 17841 -f $CFG/oper-ROADMA.xml &
+java -jar $J -p 17843 -f $CFG/oper-ROADMC.xml &
+```
+
+Mount each with `tpce_device_connect` (or a `PUT` to `network-topology`, see
+[A network to test against](#a-network-to-test-against)). TransportPCE builds the
+port mapping and the ROADM's degree and SRG nodes from the mount alone.
+
+**Link them.** Lightynode does not advertise OTS neighbours the way the
+honeynode sample configs do, so line links are declared:
+
+```bash
+curl -u admin:admin -X POST \
+  http://127.0.0.1:8181/rests/operations/transportpce-networkutils:init-roadm-nodes \
+  -H 'Content-Type: application/json' -d '{"input": {
+    "rdm-a-node": "ROADM-A1", "deg-a-num": 2, "termination-point-a": "DEG2-TTP-TXRX",
+    "rdm-z-node": "ROADM-C1", "deg-z-num": 1, "termination-point-z": "DEG1-TTP-TXRX"}}'
+```
+
+Links are unidirectional; send the reverse as well. Add OMS attributes to each
+before computing a path.
+
+**Connect to an external domain.** A degree can face a ROADM that another
+controller manages:
+
+```bash
+curl -u admin:admin -X POST \
+  http://127.0.0.1:8181/rests/operations/transportpce-networkutils:init-inter-domain-links \
+  -H 'Content-Type: application/json' -d '{"input": {
+    "a-end": {"rdm-node": "ROADM-A1", "deg-num": 1, "termination-point": "DEG1-TTP-TXRX"},
+    "z-end": {"rdm-node": "EXT-ROADM-1", "deg-num": 1, "termination-point": "DEG1-TTP-TXRX",
+              "rdm-topology-uuid": "<uuid>", "rdm-node-uuid": "<uuid>",
+              "rdm-nep-uuid": "<uuid>"}}}'
+```
+
+The external end needs TAPI UUIDs, at least the topology UUID. Without them the
+RPC **returns HTTP 204 and creates nothing**; the reason is only in `karaf.log`
+(`Topology Uuid must be populated for at least 1 node`). With them, TransportPCE
+models the other domain as a node named `TAPI-SBI-ABS-NODE` and links your degree
+to it.
+
+**Tearing down.** Unmounting a device does not remove it from the topology: its
+nodes and links stay in `openroadm-topology`, `openroadm-network` and
+`clli-network` until deleted. To reset completely, unmount everything and
+`DELETE` those networks; TransportPCE rebuilds them on the next mount.
+
 ## Request shapes
 
 Requests are validated against the YANG rather than against prose, because
