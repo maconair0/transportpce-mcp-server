@@ -1,5 +1,7 @@
 # transportpce-mcp-server
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/maconair0/transportpce-mcp-server)](https://m8ven.ai/mcp/maconair0/transportpce-mcp-server?s=readme)
+
 A [Model Context Protocol](https://modelcontextprotocol.io) server for
 [OpenDaylight TransportPCE](https://docs.opendaylight.org/projects/transportpce/en/latest/),
 the open-source optical SDN controller built on the OpenROADM models.
