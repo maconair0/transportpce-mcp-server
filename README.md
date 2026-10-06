@@ -1,5 +1,7 @@
 # TransportPCE MCP server
 
+[![M8ven Score](https://m8ven.ai/badge/mcp/maconair0/transportpce-mcp-server)](https://m8ven.ai/mcp/maconair0/transportpce-mcp-server?s=readme)
+
 An MCP server for [OpenDaylight TransportPCE](https://docs.opendaylight.org/projects/transportpce/en/latest/),
 the OpenROADM optical controller.
 
