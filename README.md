@@ -187,7 +187,10 @@ public repository. Pin `yang-data-tree-api` to `14.0.23` and `openconfig-200` to
 runs; at the time of writing 7.1 fails at startup and the OpenConfig modules
 need models that are not published.
 
-**Run two ROADMs** with TransportPCE's own sample configs:
+**Run two ROADMs** with TransportPCE's own sample configs. The jar is built for
+Java 21; an older `java` on the path fails with `UnsupportedClassVersionError
+... class file version 65.0`, so call the JDK 21 binary explicitly if it is not
+the default:
 
 ```bash
 J=lighty-openroadm-device-221/target/lighty-openroadm-device-221-*-SNAPSHOT.jar
@@ -211,8 +214,19 @@ curl -u admin:admin -X POST \
     "rdm-z-node": "ROADM-C1", "deg-z-num": 1, "termination-point-z": "DEG1-TTP-TXRX"}}'
 ```
 
-Links are unidirectional; send the reverse as well. Add OMS attributes to each
-before computing a path.
+Links are unidirectional; send the reverse as well. Then give each one span
+attributes. Without them the PCE logs `Error reading Span for OMS link ... Link
+is ignored` and answers every request with `No path found`:
+
+```bash
+L=ROADM-A1-DEG2-DEG2-TTP-TXRXtoROADM-C1-DEG1-DEG1-TTP-TXRX   # and the reverse
+curl -u admin:admin -X PUT \
+  "http://127.0.0.1:8181/rests/data/ietf-network:networks/network=openroadm-topology/ietf-network-topology:link=$L/org-openroadm-network-topology:OMS-attributes/span" \
+  -H 'Content-Type: application/json' -d '{"span": {"auto-spanloss": true,
+    "spanloss-base": 11.4, "spanloss-current": 12, "engineered-spanloss": 12.2,
+    "link-concatenation": [{"SRLG-Id": 0, "fiber-type": "smf",
+                            "SRLG-length": 100000, "pmd": 0.5}]}}'
+```
 
 **Connect to an external domain.** A degree can face a ROADM that another
 controller manages:
@@ -236,7 +250,21 @@ to it.
 **Tearing down.** Unmounting a device does not remove it from the topology: its
 nodes and links stay in `openroadm-topology`, `openroadm-network` and
 `clli-network` until deleted. To reset completely, unmount everything and
-`DELETE` those networks; TransportPCE rebuilds them on the next mount.
+`DELETE` those networks, then **recreate them empty** before mounting again:
+TransportPCE creates them only at startup, and a mount into a missing network
+leaves the port mapping populated and the topology empty, with the next
+`init-roadm-nodes` failing on a null termination point.
+
+```bash
+for n in clli-network openroadm-network openroadm-topology otn-topology; do
+  t=$([ $n = clli-network ] && echo org-openroadm-clli-network:clli-network \
+      || echo org-openroadm-common-network:openroadm-common-network)
+  curl -u admin:admin -X PUT \
+    "http://127.0.0.1:8181/rests/data/ietf-network:networks/network=$n" \
+    -H 'Content-Type: application/json' \
+    -d "{\"ietf-network:network\":[{\"network-id\":\"$n\",\"network-types\":{\"$t\":{}}}]}"
+done
+```
 
 ## Request shapes
 

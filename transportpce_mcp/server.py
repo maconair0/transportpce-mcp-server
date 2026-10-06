@@ -47,6 +47,9 @@ RPC_TAPI_TOPOLOGY = "tapi-topology:get-topology-details"
 RPC_TAPI_CONNECTIVITY = "tapi-connectivity:get-connectivity-service-list"
 
 
+# "T0 - Full Multi-layer topology", a name-based UUID TransportPCE always uses.
+TAPI_T0_FULL_UUID = "393f09a4-0a0b-3d82-a4f6-1fbbc14ca1a7"
+
 def _reply(payload: Any) -> str:
     """The one response shape: JSON text, like TFS's `format_response`."""
     return json.dumps(payload, indent=2, default=str)
@@ -234,7 +237,10 @@ def register_tools(mcp, client: RestconfClient, gate: WriteGate) -> None:
         a 404 here means odl-transportpce-tapi is not loaded.
         """
         try:
-            body = {"input": {"topology-id-or-name": topology_id}} if topology_id else {"input": {}}
+            # TransportPCE NPEs on an absent id rather than defaulting, and its
+            # TAPI revision names the field topology-id. Default to T0, the
+            # full multi-layer topology, whose UUID is fixed in TransportPCE.
+            body = {"input": {"topology-id": topology_id or TAPI_T0_FULL_UUID}}
             got = await client.rpc(RPC_TAPI_TOPOLOGY, body)
             payload = got
             if not raw and isinstance(got, dict):
