@@ -383,6 +383,19 @@ class NodeStatusShapeTests(unittest.TestCase):
         self.assertEqual(got["nodes"][0]["connection-status"], "unknown")
 
 
+class PortmappingListsEveryNode(unittest.TestCase):
+    """The portmapping summary is the device list; a sample of it is a wrong one."""
+
+    def test_sixteen_nodes_are_sixteen_entries(self):
+        payload = {"transportpce-portmapping:network": {"nodes": [
+            {"node-id": f"N{i}", "node-info": {"node-type": "rdm"},
+             "mapping": [{"logical-connection-point": "x"}] * 40} for i in range(16)]}}
+        got = summarise.summarise_portmapping(payload)
+        self.assertEqual(got["nodes"], 16)
+        self.assertEqual([n["node-id"] for n in got["detail"]], [f"N{i}" for i in range(16)])
+        self.assertNotIn("truncated", got)
+
+
 class SummaryTests(unittest.TestCase):
     """A full OpenROADM topology is megabytes; it must not be the default."""
 

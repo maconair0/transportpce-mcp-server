@@ -205,8 +205,12 @@ def summarise_portmapping(payload: Any) -> Dict[str, Any]:
     if not isinstance(nodes, list):
         nodes = []
 
+    # Every node, not a sample: this is the controller's device list, and a
+    # caller that got twelve of sixteen took the missing four for devices that
+    # had left. What is summarised is each node's mappings, which is where the
+    # size is; one short entry per node stays small at any scale.
     summary = []
-    for node in nodes[:SAMPLE]:
+    for node in nodes:
         if not isinstance(node, dict):
             continue
         mappings = node.get("mapping") or []
@@ -218,8 +222,6 @@ def summarise_portmapping(payload: Any) -> Dict[str, Any]:
             "mappings": len(mappings) if isinstance(mappings, list) else 0,
         })
     out: Dict[str, Any] = {"nodes": len(nodes), "detail": summary}
-    if len(nodes) > SAMPLE:
-        out["truncated"] = len(nodes) - SAMPLE
     out["raw_available"] = "call again with raw=true for the full payload"
     return out
 
