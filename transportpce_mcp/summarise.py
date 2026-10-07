@@ -329,9 +329,15 @@ def summarise_node_status(payload: Any, node_id: str = "") -> Dict[str, Any]:
         caps = next((v for k, v in fields.items()
                      if k.endswith("available-capabilities")), {}) or {}
         listed = caps.get("available-capability") if isinstance(caps, dict) else []
+        # Where the controller reaches the device — what an agent placed
+        # beside the device needs too. Credentials are never included.
+        host = next((v for k, v in fields.items() if k.endswith(":host") or k == "host"), None)
+        port = next((v for k, v in fields.items() if k.endswith(":port") or k == "port"), None)
         out.append({
             "node-id": node.get("node-id", node_id),
             "connection-status": status,
+            "host": host,
+            "port": port,
             "capabilities": len(listed) if isinstance(listed, list) else 0,
             "unavailable-capabilities": bool(
                 next((v for k, v in fields.items()

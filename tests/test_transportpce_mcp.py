@@ -346,8 +346,10 @@ class NodeStatusShapeTests(unittest.TestCase):
     LIVE = {"node": [{
         "node-id": "ROADM-A1",
         "netconf-node-topology:netconf-node": {
+            "host": "127.0.0.1",
             "port": 17841,
             "connection-status": "connected",
+            "login-password-unencrypted": {"username": "admin", "password": "admin"},
             "available-capabilities": {"available-capability": [{"capability": "a"},
                                                                 {"capability": "b"}]},
             "unavailable-capabilities": {"unavailable-capability": [{"capability": "c"}]},
@@ -363,6 +365,11 @@ class NodeStatusShapeTests(unittest.TestCase):
         got = summarise.summarise_node_status(self.LIVE)
         self.assertEqual(got["nodes"][0]["capabilities"], 2)
         self.assertTrue(got["nodes"][0]["unavailable-capabilities"])
+
+    def test_it_says_where_the_device_is_but_not_how_to_log_in(self):
+        got = summarise.summarise_node_status(self.LIVE)["nodes"][0]
+        self.assertEqual((got["host"], got["port"]), ("127.0.0.1", 17841))
+        self.assertNotIn("admin", str(got))
 
     def test_a_flat_node_still_reads(self):
         # older controllers returned it flat; this has to read whatever the
