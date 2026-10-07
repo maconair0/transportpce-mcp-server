@@ -325,6 +325,28 @@ def register_tools(mcp, client: RestconfClient, gate: WriteGate) -> None:
             return _failure("service_delete", e)
 
     @mcp.tool()
+    async def tpce_approve_request(approval_id: str, approver_token: str) -> str:
+        """Approve and issue one queued write, for a host that confirmed it with a person.
+
+        Needs the token the operator configured on this server
+        (TPCE_MCP_APPROVER_TOKEN). With none configured this always refuses
+        and approval stays with the runner's --approve / --apply-now.
+        """
+        import hmac
+        import os
+        token = os.getenv("TPCE_MCP_APPROVER_TOKEN", "")
+        if not token:
+            return _reply({"ok": False, "error": "disabled",
+                           "detail": "no TPCE_MCP_APPROVER_TOKEN is configured on this "
+                                     "server; approve with run_transportpce_mcp.py --approve"})
+        if not hmac.compare_digest(str(approver_token), token):
+            return _reply({"ok": False, "error": "refused", "detail": "approver token mismatch"})
+        try:
+            return _reply(await gate.approve_and_apply(approval_id, client, by="mcp-approver"))
+        except Exception as e:  # noqa: BLE001
+            return _failure("approve_request", e)
+
+    @mcp.tool()
     async def tpce_device_connect(node_id: str, host: str, port: int = 830,
                                   username: str = "", password: str = "") -> str:
         """Request that TransportPCE mount a NETCONF device. Queues for approval.
@@ -361,4 +383,5 @@ READ_TOOLS = (
 )
 WRITE_TOOLS = (
     "tpce_service_create", "tpce_service_delete", "tpce_device_connect",
+    "tpce_approve_request",
 )

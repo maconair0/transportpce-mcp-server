@@ -212,7 +212,8 @@ class WriteGate:
         return out
 
     async def apply_approved(self, client: Any,
-                             on_result: Optional[Callable] = None) -> Dict[str, Any]:
+                             on_result: Optional[Callable] = None,
+                             only: Optional[str] = None) -> Dict[str, Any]:
         """Issue the RPCs for approved items. Called by the runner, not by a tool.
 
         Deliberately not exposed over MCP. If a model could call this, the queue
@@ -221,6 +222,8 @@ class WriteGate:
         self._load()
         applied, failed = [], []
         for item in self.approved_items():
+            if only is not None and item["id"] != only:
+                continue
             instruction = item["instruction"]
             try:
                 # Two kinds of southbound write reach this queue. A service is
@@ -259,6 +262,28 @@ class WriteGate:
         if applied or failed:
             self._queue._save()  # noqa: SLF001 - persisting the applied marker
         return {"applied": applied, "failed": failed}
+
+
+    async def approve_and_apply(self, item_id: str, client: Any, by: str) -> Dict[str, Any]:
+        """Approve one queued write and issue it now — that item only.
+
+        For a host system that has had a person confirm this exact change; the
+        caller has checked the operator's approver token. `by` is recorded.
+        """
+        self._load()
+        item = self._queue.get(item_id)
+        if item is None:
+            return {"ok": False, "error": f"no queued request {item_id}"}
+        if (item.get("instruction") or {}).get("controller") != "transportpce":
+            return {"ok": False, "error": f"{item_id} is not a TransportPCE request"}
+        if item.get("state") not in ("pending_approval", "pending"):
+            return {"ok": False, "error": f"{item_id} is already {item.get('state')}"}
+        self._queue.decide(item_id, True, by, "approved by a confirming host")
+        result = await self.apply_approved(client, only=item_id)
+        ok = item_id in result.get("applied", [])
+        return {"ok": ok, "id": item_id, "state": "applied" if ok else "failed",
+                "action": (item.get("instruction") or {}).get("action"),
+                **({} if ok else {"error": (result.get("failed") or [{}])[0].get("error", "")})}
 
 
 def _now() -> str:
